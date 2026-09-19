@@ -6,6 +6,9 @@ import { supabase, checkSupabaseHealth } from '../config/supabase.js';
 import { store } from './store.service.js';
 import { parseCsvBuffer } from '../utils/csv.js';
 import { Email, SentEmail, Thread, ThreadMessage, Priority, Topic } from '../types/index.js';
+import { logger } from '../utils/logger.js';
+
+const log = logger.child('Import');
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -18,6 +21,7 @@ export interface ImportStats {
   sent: number;
   threads: number;
   errors: number;
+  validationErrors?: string[];
 }
 
 export interface ParsedEmailRecord {
@@ -37,11 +41,22 @@ export interface ParsedEmailRecord {
 
 export class ImportService {
   /**
+   * Validates email address format
+   */
+  public isValidEmailAddress(emailStr: string): boolean {
+    if (!emailStr || typeof emailStr !== 'string') return false;
+    const clean = emailStr.trim();
+    if (clean.length < 3 || clean.length > 254) return false;
+    return clean.includes('@') && !clean.includes(' ') && clean.indexOf('@') > 0;
+  }
+
+  /**
    * Normalizes subject line by stripping common prefix markers like Re:, Fwd:, FW:, etc.
    */
   public normalizeSubject(subject: string): string {
-    if (!subject) return 'No Subject';
+    if (!subject || typeof subject !== 'string') return 'No Subject';
     let clean = subject.trim();
+    if (clean.length > 300) clean = clean.slice(0, 300);
     // Repeatedly strip prefixes
     const prefixRegex = /^(re|fwd|fw|re\[\d+\]|fwd\[\d+\])\s*:\s*/i;
     while (prefixRegex.test(clean)) {
@@ -54,8 +69,9 @@ export class ImportService {
    * Cleans body text, removing forwarded header noise, phone numbers, and Enron artifacts
    */
   public cleanBody(rawBody: string): string {
-    if (!rawBody) return '';
+    if (!rawBody || typeof rawBody !== 'string') return '';
     let b = rawBody.trim();
+    if (b.length > 500000) b = b.slice(0, 500000); // 500KB cap per email body
 
     // Strip forwarded headers block
     if (b.includes('---------------------- Forwarded by')) {
@@ -92,12 +108,12 @@ export class ImportService {
    * Extracts formatted name from email and optional X-From header
    */
   public extractSenderName(from: string, xFrom?: string): string {
-    if (xFrom && xFrom.trim().length > 0) {
+    if (xFrom && typeof xFrom === 'string' && xFrom.trim().length > 0) {
       let name = xFrom.split('<')[0].replace(/["']/g, '').trim();
       if (name.includes('/')) name = name.split('/')[0].trim();
       if (name.length > 2 && name.length < 40) return name;
     }
-    const local = from.split('@')[0] || 'Unknown';
+    const local = from ? (from.split('@')[0] || 'Unknown') : 'Unknown';
     const parts = local.split('.').map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase());
     return parts.join(' ');
   }
@@ -111,16 +127,16 @@ export class ImportService {
       const hash = crypto.createHash('md5').update(cleanMsgId).digest('hex').slice(0, 12);
       return `enron_${hash}`;
     }
-    const signature = `${rec.from}_${this.normalizeSubject(rec.subject)}_${rec.date}_${rec.body.slice(0, 50)}`;
+    const signature = `${rec.from}_${this.normalizeSubject(rec.subject)}_${rec.date}_${(rec.body || '').slice(0, 50)}`;
     const hash = crypto.createHash('md5').update(signature).digest('hex').slice(0, 12);
     return `em_${hash}`;
   }
 
   /**
-   * Parses raw RFC 822 email text into structured fields
+   * Parses raw RFC 822 email text into structured fields with strict validation
    */
   public parseRFC822(rawText: string, filePath: string = ''): ParsedEmailRecord | null {
-    if (!rawText || !rawText.trim()) return null;
+    if (!rawText || typeof rawText !== 'string' || !rawText.trim()) return null;
 
     let cleanRaw = rawText.trim();
     if (cleanRaw.startsWith('"') && cleanRaw.endsWith('"')) {
@@ -145,15 +161,18 @@ export class ImportService {
       }
     }
 
-    const from = (headers['from'] || 'unknown@mailpilot.demo').toLowerCase().replace(/@enron\.com/gi, '@mailpilot.demo');
-    const to = (headers['to'] || 'sai@mailpilot.demo').toLowerCase().replace(/@enron\.com/gi, '@mailpilot.demo');
+    const rawFrom = headers['from'] || 'unknown@mailpilot.demo';
+    const rawTo = headers['to'] || 'sai@mailpilot.demo';
+
+    const from = rawFrom.toLowerCase().replace(/@enron\.com/gi, '@mailpilot.demo');
+    const to = rawTo.toLowerCase().replace(/@enron\.com/gi, '@mailpilot.demo');
     const subject = headers['subject'] || 'No Subject';
     const messageId = headers['message-id'] || '';
     const dateStr = headers['date'] || new Date().toISOString();
     const senderName = this.extractSenderName(from, headers['x-from']);
     const body = this.cleanBody(rawBody);
 
-    if (!body || body.length < 15) {
+    if (!body || body.length < 10) {
       return null;
     }
 
@@ -189,7 +208,7 @@ export class ImportService {
   }
 
   /**
-   * Processes an uploaded file (CSV or JSON) or structured array
+   * Processes an uploaded file (CSV or JSON) or structured array with validation
    */
   public async processUpload(options: {
     fileBuffer?: Buffer;
@@ -199,6 +218,7 @@ export class ImportService {
   }): Promise<{ stats: ImportStats; sampleEmails: ParsedEmailRecord[] }> {
     const limit = options.limit || 100;
     let records: ParsedEmailRecord[] = [];
+    const validationErrors: string[] = [];
 
     // 1. Check if buffer provided
     if (options.fileBuffer && options.fileName) {
@@ -207,51 +227,83 @@ export class ImportService {
       if (name.endsWith('.csv')) {
         const rows = await parseCsvBuffer(options.fileBuffer);
 
-        for (const row of rows) {
+        for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
           if (records.length >= limit) break;
+          const row = rows[rowIndex];
 
-          // Case A: Standard Enron CSV with "file" and "message"
-          if (row['message'] || row['Message']) {
-            const rawMsg = row['message'] || row['Message'];
-            const file = row['file'] || row['File'] || '';
-            const parsed = this.parseRFC822(rawMsg, file);
-            if (parsed) records.push(parsed);
-          }
-          // Case B: Generic CSV with sender, recipient, subject, body
-          else if (row['body'] || row['Body'] || row['subject'] || row['Subject']) {
-            const sender = (row['sender'] || row['from'] || row['From'] || 'colleague@mailpilot.demo').trim();
-            const recipient = (row['recipient'] || row['to'] || row['To'] || 'sai@mailpilot.demo').trim();
-            const subject = (row['subject'] || row['Subject'] || 'No Subject').trim();
-            const body = this.cleanBody(row['body'] || row['Body'] || row['content'] || '');
-            const dateStr = row['timestamp'] || row['date'] || row['Date'] || new Date().toISOString();
-
-            if (body.length >= 15) {
-              const id = this.generateDeterministicId({ from: sender, subject, date: dateStr, body });
-              records.push({
-                id,
-                sender,
-                senderName: this.extractSenderName(sender),
-                recipient,
-                subject,
-                normalizedSubject: this.normalizeSubject(subject),
-                body,
-                timestamp: new Date(dateStr).toISOString(),
-                isSent: sender.includes('sai@')
-              });
+          try {
+            // Case A: Standard Enron CSV with "file" and "message"
+            if (row['message'] || row['Message']) {
+              const rawMsg = row['message'] || row['Message'];
+              const file = row['file'] || row['File'] || '';
+              const parsed = this.parseRFC822(rawMsg, file);
+              if (parsed) {
+                records.push(parsed);
+              } else {
+                validationErrors.push(`Row ${rowIndex + 1}: empty or unparseable RFC822 message content`);
+              }
             }
+            // Case B: Generic CSV with sender, recipient, subject, body
+            else if (row['body'] || row['Body'] || row['subject'] || row['Subject']) {
+              const rawSender = (row['sender'] || row['from'] || row['From'] || 'colleague@mailpilot.demo').trim();
+              const rawRecipient = (row['recipient'] || row['to'] || row['To'] || 'sai@mailpilot.demo').trim();
+              const sender = this.isValidEmailAddress(rawSender) ? rawSender : 'colleague@mailpilot.demo';
+              const recipient = this.isValidEmailAddress(rawRecipient) ? rawRecipient : 'sai@mailpilot.demo';
+              const subject = (row['subject'] || row['Subject'] || 'No Subject').trim();
+              const body = this.cleanBody(row['body'] || row['Body'] || row['content'] || '');
+              const dateStr = row['timestamp'] || row['date'] || row['Date'] || new Date().toISOString();
+
+              if (body.length >= 10) {
+                const id = this.generateDeterministicId({ from: sender, subject, date: dateStr, body });
+                let timestamp = new Date().toISOString();
+                try {
+                  const d = new Date(dateStr);
+                  if (!isNaN(d.getTime())) timestamp = d.toISOString();
+                } catch {
+                  timestamp = new Date().toISOString();
+                }
+
+                records.push({
+                  id,
+                  sender,
+                  senderName: this.extractSenderName(sender),
+                  recipient,
+                  subject,
+                  normalizedSubject: this.normalizeSubject(subject),
+                  body,
+                  timestamp,
+                  isSent: sender.includes('sai@')
+                });
+              } else {
+                validationErrors.push(`Row ${rowIndex + 1}: message body too short or empty (< 10 chars)`);
+              }
+            } else {
+              validationErrors.push(`Row ${rowIndex + 1}: missing recognizable email columns`);
+            }
+          } catch (rowErr: any) {
+            validationErrors.push(`Row ${rowIndex + 1}: parsing error - ${rowErr.message}`);
           }
         }
       } else if (name.endsWith('.json')) {
         const content = options.fileBuffer.toString('utf8');
-        const parsed = JSON.parse(content);
-        records = this.parseJsonStructure(parsed, limit);
+        try {
+          const parsed = JSON.parse(content);
+          records = this.parseJsonStructure(parsed, limit);
+        } catch (jsonErr: any) {
+          throw new Error(`Malformed JSON file: ${jsonErr.message}`);
+        }
       }
     } else if (options.jsonBody) {
       records = this.parseJsonStructure(options.jsonBody, limit);
     }
 
+    log.info(`Processed upload: parsed ${records.length} valid records, ${validationErrors.length} validation notices.`);
+
     // 2. Persist records and build threads
     const stats = await this.persistNormalizedRecords(records);
+    if (validationErrors.length > 0) {
+      stats.validationErrors = validationErrors.slice(0, 10);
+    }
     return {
       stats,
       sampleEmails: records.slice(0, 5)

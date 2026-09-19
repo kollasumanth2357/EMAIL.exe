@@ -57,6 +57,8 @@ export interface Draft {
     direct: boolean;
     preferred_greeting: boolean;
     preferred_signoff: boolean;
+    confidence_score?: number;
+    recipient_register?: string;
   };
   status: 'draft' | 'sent';
   created_at: string;
@@ -83,6 +85,13 @@ export interface UserStyleProfile {
   style_description: string;
   learned_from_count: number;
   characteristics: string[];
+  stylometry?: {
+    avg_sentence_words?: number;
+    avg_words_per_email?: number;
+    vocabulary_richness?: string;
+    register_delta?: string;
+    confidence_score?: number;
+  };
 }
 
 export interface StyleExample {

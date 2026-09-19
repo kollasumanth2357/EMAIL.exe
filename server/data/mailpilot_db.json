@@ -1,6 +1,118 @@
 {
   "emails": [
     {
+      "id": "em_9423b8c1c116",
+      "thread_id": "th_34d3549821",
+      "sender": "valid.sender@company.com",
+      "sender_name": "Valid Sender",
+      "recipient": "recipient@company.com",
+      "subject": "Valid Subject",
+      "body": "This is a valid body with sufficient content.",
+      "timestamp": "2026-09-19T12:56:43.089Z",
+      "priority": "Low",
+      "topic": "Work",
+      "summary": "Received a generic email with no specific request.\nNo immediate action needed.",
+      "is_read": true,
+      "status": "inbox",
+      "messages": [
+        {
+          "id": "tm_em_9423b8c1c116",
+          "thread_id": "th_34d3549821",
+          "sender": "valid.sender@company.com",
+          "sender_name": "Valid Sender",
+          "recipient": "recipient@company.com",
+          "subject": "Valid Subject",
+          "body": "This is a valid body with sufficient content.",
+          "timestamp": "2026-09-19T12:56:43.089Z"
+        }
+      ],
+      "created_at": "2026-09-19T12:56:45.969Z"
+    },
+    {
+      "id": "em_08333c79ec97",
+      "thread_id": "th_170d39e113",
+      "sender": "colleague@mailpilot.demo",
+      "sender_name": "Colleague",
+      "recipient": "recipient@company.com",
+      "subject": "Missing Sender",
+      "body": "Body with missing sender.",
+      "timestamp": "2026-09-19T12:56:43.089Z",
+      "priority": "Normal",
+      "topic": "Work",
+      "summary": "Colleague notes a missing sender issue in the email.\nNo urgent action required, but acknowledge and investigate if needed.",
+      "is_read": false,
+      "status": "inbox",
+      "messages": [
+        {
+          "id": "tm_em_08333c79ec97",
+          "thread_id": "th_170d39e113",
+          "sender": "colleague@mailpilot.demo",
+          "sender_name": "Colleague",
+          "recipient": "recipient@company.com",
+          "subject": "Missing Sender",
+          "body": "Body with missing sender.",
+          "timestamp": "2026-09-19T12:56:43.089Z"
+        }
+      ],
+      "created_at": "2026-09-19T12:56:45.969Z"
+    },
+    {
+      "id": "em_dd2b4376bfc7",
+      "thread_id": "th_69e3b58cad",
+      "sender": "colleague@mailpilot.demo",
+      "sender_name": "Colleague",
+      "recipient": "recipient@company.com",
+      "subject": "Invalid Sender Format",
+      "body": "Malformed email address body.",
+      "timestamp": "2026-09-19T12:56:43.089Z",
+      "priority": "Normal",
+      "topic": "Work",
+      "summary": "Malformed email address body....",
+      "is_read": false,
+      "status": "inbox",
+      "messages": [
+        {
+          "id": "tm_em_dd2b4376bfc7",
+          "thread_id": "th_69e3b58cad",
+          "sender": "colleague@mailpilot.demo",
+          "sender_name": "Colleague",
+          "recipient": "recipient@company.com",
+          "subject": "Invalid Sender Format",
+          "body": "Malformed email address body.",
+          "timestamp": "2026-09-19T12:56:43.089Z"
+        }
+      ],
+      "created_at": "2026-09-19T12:56:45.969Z"
+    },
+    {
+      "id": "em_8ae0883207ba",
+      "thread_id": "th_37ca271735",
+      "sender": "another.sender@company.com",
+      "sender_name": "Another Sender",
+      "recipient": "valid.to@company.com",
+      "subject": "Valid Second Email",
+      "body": "Second valid body text with good length.",
+      "timestamp": "2026-09-19T12:56:43.089Z",
+      "priority": "Normal",
+      "topic": "Work",
+      "summary": "Second valid body text with good length....",
+      "is_read": true,
+      "status": "sent",
+      "messages": [
+        {
+          "id": "tm_em_8ae0883207ba",
+          "thread_id": "th_37ca271735",
+          "sender": "another.sender@company.com",
+          "sender_name": "Another Sender",
+          "recipient": "valid.to@company.com",
+          "subject": "Valid Second Email",
+          "body": "Second valid body text with good length.",
+          "timestamp": "2026-09-19T12:56:43.089Z"
+        }
+      ],
+      "created_at": "2026-09-19T12:56:45.969Z"
+    },
+    {
       "id": "email_01",
       "thread_id": "thread_01",
       "sender": "p.kumar@university.edu",
@@ -764,6 +876,15 @@
   ],
   "sent_emails": [
     {
+      "id": "sent_1789822644394",
+      "original_email_id": "em_8ae0883207ba",
+      "recipient": "another.sender@company.com",
+      "subject": "Re: Final Review Confirmation",
+      "body": "Hi,\n\nThanks for reaching out. Let us proceed with the review.\n\nRegards,\nSai",
+      "sent_at": "2026-09-19T12:57:24.394Z",
+      "status": "Sent"
+    },
+    {
       "id": "gmail_sent_1a0b98b47641c36e",
       "original_email_id": "gmail_1a0a8778bf5c3361",
       "recipient": "noreply-accounts@google.com",
@@ -1043,6 +1164,13 @@
     ]
   },
   "style_examples": [
+    {
+      "id": "sent_1789822644394",
+      "recipient": "another.sender@company.com",
+      "subject": "Re: Final Review Confirmation",
+      "body": "Hi,\n\nThanks for reaching out. Let us proceed with the review.\n\nRegards,\nSai",
+      "timestamp": "2026-09-19T12:57:24.394Z"
+    },
     {
       "id": "sent_1789819309581",
       "recipient": "noreply-accounts@google.com",

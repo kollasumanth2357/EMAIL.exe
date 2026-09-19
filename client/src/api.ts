@@ -285,6 +285,7 @@ export async function approveAndSend(
   success: boolean;
   message?: string;
   sentEmail: SentEmail;
+  dispatch_mode?: 'gmail_api' | 'demo_simulation';
   gmailSent?: boolean;
   gmailSendError?: string | null;
   gmailMessageId?: string | null;

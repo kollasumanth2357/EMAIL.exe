@@ -4,6 +4,9 @@ import { store } from '../services/store.service.js';
 import { aiService } from '../services/ai.service.js';
 import { importService } from '../services/import.service.js';
 import { gmailService } from '../services/gmail.service.js';
+import { queueService } from '../services/queue.service.js';
+import { authRateLimiter } from '../middleware/rateLimiter.js';
+import { logger } from '../utils/logger.js';
 import { parseCsvBuffer } from '../utils/csv.js';
 import { hashPassword } from '../utils/auth.js';
 
@@ -24,11 +27,11 @@ export function isDemoRequest(req: Request): boolean {
 }
 
 // ==========================================
-// AUTHENTICATION ROUTES
+// AUTHENTICATION ROUTES (with Rate Limiting)
 // ==========================================
 
 // POST /api/auth/register
-router.post('/auth/register', async (req: Request, res: Response) => {
+router.post('/auth/register', authRateLimiter, async (req: Request, res: Response) => {
   try {
     const { name, email, password } = req.body;
 
@@ -44,6 +47,7 @@ router.post('/auth/register', async (req: Request, res: Response) => {
 
     const passwordHash = hashPassword(password);
     const user = await store.createUser(name.trim(), email.trim(), passwordHash);
+    logger.info(`User registered successfully: ${user.email}`, 'AUTH');
 
     res.json({
       success: true,
@@ -54,12 +58,13 @@ router.post('/auth/register', async (req: Request, res: Response) => {
       }
     });
   } catch (err: any) {
+    logger.warn(`Registration failed for ${req.body?.email}: ${err.message}`, 'AUTH');
     res.status(400).json({ success: false, error: err.message || 'Registration failed.' });
   }
 });
 
 // POST /api/auth/login
-router.post('/auth/login', async (req: Request, res: Response) => {
+router.post('/auth/login', authRateLimiter, async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body;
 
@@ -69,14 +74,17 @@ router.post('/auth/login', async (req: Request, res: Response) => {
 
     const result = await store.authenticateUser(email, password);
     if (!result.success || !result.user) {
+      logger.warn(`Login failed for ${email}: ${result.error || 'Invalid credentials'}`, 'AUTH');
       return res.status(401).json({ success: false, error: result.error || 'Invalid email or password.' });
     }
 
+    logger.info(`User authenticated successfully: ${email}`, 'AUTH');
     res.json({
       success: true,
       user: result.user
     });
   } catch (err: any) {
+    logger.error(`Authentication error for ${req.body?.email}: ${err.message}`, 'AUTH');
     res.status(500).json({ success: false, error: 'Authentication error: ' + err.message });
   }
 });
@@ -760,14 +768,15 @@ router.post('/drafts/:id/send', async (req: Request, res: Response) => {
           bodyText: content || '',
           gmailMessageId: rawGmailMsgId
         });
-        console.log(`[API] Gmail send verified. Thread: ${gmailResult.threadId}, Msg: ${gmailResult.gmailMessageId}`);
+        logger.info(`Gmail send verified. Thread: ${gmailResult.threadId}, Msg: ${gmailResult.gmailMessageId}`, 'GMAIL');
       } catch (gmailErr: any) {
-        console.error('[API] Gmail reply send failed:', gmailErr.message);
+        logger.error(`Gmail reply send failed: ${gmailErr.message}`, 'GMAIL');
         // CRITICAL: Keep draft intact, do NOT create fake local sent record, return real error
         return res.status(500).json({
           success: false,
           error: `Could not send reply via Gmail: ${gmailErr.message}`,
-          gmailError: gmailErr.message
+          gmailError: gmailErr.message,
+          dispatch_mode: 'gmail_api'
         });
       }
     }
@@ -791,7 +800,7 @@ router.post('/drafts/:id/send', async (req: Request, res: Response) => {
           status: 'Sent'
         });
       } catch (recordErr: any) {
-        console.warn('[API] Could not record real Gmail sent item:', recordErr.message);
+        logger.warn(`Could not record real Gmail sent item: ${recordErr.message}`, 'STORE');
       }
     }
 
@@ -799,15 +808,123 @@ router.post('/drafts/:id/send', async (req: Request, res: Response) => {
       success: true,
       message: isRealGmail
         ? 'Reply sent via Gmail — verified in your Gmail Sent folder and original thread.'
-        : 'Reply sent successfully',
+        : 'Reply sent successfully (Demo Sandbox)',
       sentEmail: result.sentEmail,
+      dispatch_mode: isRealGmail ? 'gmail_api' : 'demo_simulation',
       gmailSent: isRealGmail,
       gmailMessageId: gmailResult?.gmailMessageId || null,
       gmailThreadId: gmailResult?.threadId || null
     });
   } catch (err: any) {
+    logger.error(`Send draft error: ${err.message}`, 'API');
     res.status(500).json({ success: false, error: err.message });
   }
+});
+
+// 8b. ASYNC BATCH TRIAGE QUEUE ENDPOINT (POST /api/emails/analyze-async)
+router.post('/emails/analyze-async', async (req: Request, res: Response) => {
+  try {
+    const isDemo = isDemoRequest(req);
+    const { email_ids } = req.body || {};
+
+    const emails = await store.getEmails({ isDemo });
+    const targetEmails = Array.isArray(email_ids) && email_ids.length > 0
+      ? emails.filter(e => email_ids.includes(e.id))
+      : emails.slice(0, 50);
+
+    const job = queueService.submitJob(
+      'batch_triage',
+      { totalEmails: targetEmails.length, isDemo },
+      async (_job, updateProgress) => {
+        let triagedCount = 0;
+        const results = [];
+
+        for (let i = 0; i < targetEmails.length; i++) {
+          const email = targetEmails[i];
+          try {
+            const thread = await store.getThreadById(email.thread_id);
+            const classification = await aiService.classifyEmail(
+              email,
+              email.messages || thread?.messages
+            );
+            await store.updateEmail(email.id, {
+              priority: classification.priority,
+              topic: classification.topic,
+              summary: classification.summary
+            });
+            triagedCount++;
+            results.push({ id: email.id, success: true, priority: classification.priority, topic: classification.topic });
+            updateProgress({
+              total: targetEmails.length,
+              processed: i + 1,
+              successful: triagedCount,
+              currentStep: `Triaged email ${i + 1}/${targetEmails.length}`
+            });
+          } catch (err: any) {
+            logger.warn(`Batch triage error for email ${email.id}: ${err.message}`, 'QUEUE');
+            results.push({ id: email.id, success: false, error: err.message });
+            updateProgress({
+              total: targetEmails.length,
+              processed: i + 1,
+              failed: (i + 1) - triagedCount,
+              currentStep: `Failed email ${i + 1}/${targetEmails.length}`
+            });
+          }
+        }
+
+        return {
+          total: targetEmails.length,
+          triagedCount,
+          results
+        };
+      }
+    );
+
+    res.json({
+      success: true,
+      message: `Batch triage job enqueued for ${targetEmails.length} emails.`,
+      jobId: job.id,
+      job: {
+        id: job.id,
+        type: job.type,
+        status: job.status,
+        progress: job.progress,
+        created_at: job.createdAt
+      }
+    });
+  } catch (err: any) {
+    logger.error(`Failed to enqueue batch triage job: ${err.message}`, 'QUEUE');
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 8c. GET /api/jobs/:id (Poll async job status)
+router.get('/jobs/:id', (req: Request, res: Response) => {
+  const jobId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const job = queueService.getJob(jobId);
+  if (!job) {
+    return res.status(404).json({ success: false, error: 'Job not found' });
+  }
+  res.json({
+    success: true,
+    job: {
+      id: job.id,
+      type: job.type,
+      status: job.status,
+      progress: job.progress,
+      result: job.result,
+      error: job.error,
+      created_at: job.createdAt,
+      started_at: job.startedAt,
+      completed_at: job.completedAt
+    }
+  });
+});
+
+// 8d. GET /api/jobs (List recent jobs)
+router.get('/jobs', (_req: Request, res: Response) => {
+  const jobs = queueService.listJobs(20);
+  res.json({ success: true, jobs });
 });
 
 // 9. GET /api/drafts (Enriched with original email subject, sender, and priority)
@@ -1079,7 +1196,7 @@ router.post('/gmail/sync', async (req: Request, res: Response) => {
   try {
     const isDemo = isDemoRequest(req);
     if (isDemo) {
-      console.log('[GMAIL SYNC]\nDemo session detected — Gmail synchronization skipped.');
+      logger.info('Demo session detected — Gmail synchronization skipped.', 'GMAIL');
       return res.json({
         success: true,
         message: 'Demo session active — Gmail synchronization skipped.',
@@ -1094,7 +1211,7 @@ router.post('/gmail/sync', async (req: Request, res: Response) => {
       });
     }
 
-    console.log('[GMAIL SYNC]\nReal Gmail session — synchronization allowed.');
+    logger.info('Real Gmail session — synchronization allowed.', 'GMAIL');
     const currentStatus = gmailService.getStatus();
 
     // If connected via real OAuth, fetch real Gmail messages (two-way sync)
