@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.env
+*.env
+*.log
+.gmail_tokens.json
+*.gmail_tokens.json
